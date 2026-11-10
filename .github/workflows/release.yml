@@ -1,0 +1,118 @@
+name: Build and release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows (x64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix zip
+      - name: Fetch VST3 SDK
+        run: sh scripts/get_sdk.sh
+      - name: Build plugin
+        run: |
+          cmake -S . -B build_win -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=scripts/mingw-toolchain.cmake
+          cmake --build build_win
+      - name: Build load-check tool
+        run: |
+          SDK=third_party/vst3sdk
+          x86_64-w64-mingw32-g++-posix -std=c++17 -O1 -w -static -I$SDK tools/win_scan_test.cpp \
+            $SDK/pluginterfaces/base/funknown.cpp $SDK/pluginterfaces/base/coreiids.cpp \
+            $SDK/public.sdk/source/vst/vstinitiids.cpp $SDK/base/source/baseiids.cpp \
+            $SDK/public.sdk/source/common/commoniids.cpp -o build_win/rd_check.exe -luser32 -lole32
+      - name: Package
+        run: |
+          P=pkg/RasterDamage-windows-x64
+          mkdir -p $P/RasterDamage.vst3/Contents/x86_64-win
+          cp build_win/dist/RasterDamage.vst3 $P/RasterDamage.vst3/Contents/x86_64-win/RasterDamage.vst3
+          cp build_win/rd_check.exe $P/
+          printf '@echo off\r\n"%%~dp0rd_check.exe" "%%~dp0RasterDamage.vst3\\Contents\\x86_64-win\\RasterDamage.vst3"\r\npause\r\n' > $P/check_plugin.bat
+          printf 'Copy the whole RasterDamage.vst3 FOLDER to C:\\Program Files\\Common Files\\VST3\\ and rescan plugins in your DAW.\r\nIf it does not show up, run check_plugin.bat.\r\n' > $P/INSTALL.txt
+          cp GUIDE.md README.md LICENSE $P/
+          (cd pkg && zip -qr ../RasterDamage-windows-x64.zip RasterDamage-windows-x64)
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: RasterDamage-windows-x64.zip }
+
+  linux:
+    name: Linux (x64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake pkg-config zip libcairo2-dev libpango1.0-dev libfreetype-dev \
+            libfontconfig-dev libxcb1-dev libxcb-util-dev libxcb-cursor-dev libxcb-keysyms1-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libglib2.0-dev
+      - name: Fetch VST3 SDK
+        run: sh scripts/get_sdk.sh
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Test
+        run: |
+          ./build/rd_test | tail -3
+          ./build/rd_test_controller | tail -2
+      - name: Package
+        run: |
+          P=pkg/RasterDamage-linux-x64
+          mkdir -p $P/RasterDamage.vst3/Contents/x86_64-linux
+          cp build/RasterDamage.so $P/RasterDamage.vst3/Contents/x86_64-linux/RasterDamage.so
+          printf 'Copy the RasterDamage.vst3 folder to ~/.vst3/ (or /usr/lib/vst3/) and rescan plugins.\n' > $P/INSTALL.txt
+          cp GUIDE.md README.md LICENSE $P/
+          (cd pkg && zip -qr ../RasterDamage-linux-x64.zip RasterDamage-linux-x64)
+      - uses: actions/upload-artifact@v4
+        with: { name: linux, path: RasterDamage-linux-x64.zip }
+
+  macos:
+    name: macOS (universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch VST3 SDK
+        run: sh scripts/get_sdk.sh
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build build --target RasterDamage rd_test
+      - name: Test
+        run: ./build/rd_test | tail -3
+      - name: Package
+        run: |
+          P=pkg/RasterDamage-macos-universal
+          mkdir -p $P
+          cp -R build/RasterDamage.vst3 $P/RasterDamage.vst3
+          codesign --force --deep --sign - $P/RasterDamage.vst3
+          printf 'Copy RasterDamage.vst3 to ~/Library/Audio/Plug-Ins/VST3/ and rescan.\nIf macOS blocks it: xattr -cr ~/Library/Audio/Plug-Ins/VST3/RasterDamage.vst3\n' > $P/INSTALL.txt
+          cp GUIDE.md README.md LICENSE $P/
+          (cd pkg && zip -qr ../RasterDamage-macos-universal.zip RasterDamage-macos-universal)
+      - uses: actions/upload-artifact@v4
+        with: { name: macos, path: RasterDamage-macos-universal.zip }
+
+  release:
+    name: Publish release
+    needs: [windows, linux, macos]
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dl, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dl/*.zip
+          generate_release_notes: false
+          body: |
+            Raster Damage, a scanline filter for audio (VST3). See the README for install steps and the GUIDE for every control.
+            Windows x64, Linux x64 (with editor) and macOS universal (generic host UI) builds are attached.

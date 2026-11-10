@@ -6,17 +6,23 @@
 
 ## Download
 
-**[prebuilt/RasterDamage-win64.zip](prebuilt/RasterDamage-win64.zip)** (click the file, then the download button).
+Grab the build for your system from the **[Releases page](../../releases/latest)**:
 
-The zip contains the Windows 64-bit **VST3** plugin, a load-check tool, an offline renderer and the full manual.
+| System | File | Editor |
+|---|---|---|
+| Windows 64-bit | `RasterDamage-windows-x64.zip` | full custom interface |
+| Linux 64-bit | `RasterDamage-linux-x64.zip` | full custom interface |
+| macOS (Intel + Apple Silicon) | `RasterDamage-macos-universal.zip` | generic host parameter UI (custom editor not ported yet) |
 
-### Install (Windows)
+Releases are built automatically by GitHub Actions from this source, for every version tag.
 
-1. Unzip it.
-2. Copy the whole **`RasterDamage.vst3` folder** to `C:\Program Files\Common Files\VST3\`.
-3. Rescan plugins in your DAW. In Reaper: *Preferences > Plug-ins > VST > Clear cache/re-scan*.
+A Windows build is also kept in the repo: [prebuilt/RasterDamage-win64.zip](prebuilt/RasterDamage-win64.zip).
 
-If it doesn't appear, run `check_plugin.bat` from the zip. It loads the plugin the way a host does and prints the exact Windows error. Details are in [Troubleshooting](#troubleshooting).
+### Install
+
+- **Windows:** copy the whole `RasterDamage.vst3` **folder** to `C:\Program Files\Common Files\VST3\`, then rescan (Reaper: *Preferences > Plug-ins > VST > Clear cache/re-scan*). If it doesn't show up, run `check_plugin.bat` from the zip: it prints the exact load error.
+- **Linux:** copy `RasterDamage.vst3` to `~/.vst3/` and rescan.
+- **macOS:** copy `RasterDamage.vst3` to `~/Library/Audio/Plug-Ins/VST3/` and rescan. If macOS blocks it: `xattr -cr ~/Library/Audio/Plug-Ins/VST3/RasterDamage.vst3`. The macOS build is untested on real hardware.
 
 ## The idea
 
@@ -41,19 +47,21 @@ The plugin reports 2 samples of latency so the dry path in *Mix* stays phase-ali
 
 ## The interface
 
-- **Top bar:** preset dropdown (grouped by category, then *My presets*), ◀ ▶ to step through every preset, **Save**, **Load**, **Init**, **Bypass**.
-- **SCAN:** slice length (ms, or tempo-synced), jitter, loop, seed, stereo interlace, input follow, and the master **DAMAGE** knob.
-- **LIVE RASTER:** a live picture of what the current settings do to a test pattern, with lanes for tear, dropout, smear and sync loss.
-- **TEAR / SCANLINES / SMEAR / SYNC LOSS:** the damage controls, with a mode dropdown in each panel. **FIRE NOW** triggers a sync-loss burst on demand.
-- **OUTPUT:** bandwidth, static, drive, split, mix and output level.
+![Raster Damage interface](docs/interface.png)
 
-Mouse: drag a knob, hold **Shift** for fine control, **double-click** to reset, use the wheel to nudge.
+The layout follows the signal flow: **SCAN > TEAR > SMEAR > SCANLINES > SYNC LOSS > OUTPUT**.
 
-![More interface](docs/interface-2.png)
+- **Top bar:** preset dropdown (by category, then *My presets*), ◀ ▶, **Save**, **Load**, **Init**, **Randomize**, **Undo**, **Bypass**.
+- **Each section:** a mode dropdown, its knobs, and **RND** (randomise just this section, within musical ranges) / **RST** (reset just this section) in the header.
+- **SCAN:** slice length (ms or tempo-synced), jitter, loop, seed, interlace, input follow, and the big **DAMAGE** knob.
+- **FIRE NOW** (in SYNC LOSS): hold to trigger a sync-loss burst.
+- **Hint bar:** hover anything for its name, exact value and a one-line explanation.
+
+Mouse: drag, **Shift** = fine, **double-click** = reset, wheel = nudge.
 
 ## Presets
 
-47 factory presets, all 100% wet (only the processed sound, no original bleeding through):
+77 factory presets, all 100% wet (only the processed sound, no original bleeding through):
 
 | Category | Count |
 |---|---|
@@ -65,6 +73,9 @@ Mouse: drag a knob, hold **Shift** for fine control, **double-click** to reset, 
 | Drums | 6 |
 | Sync loss / extremes | 5 |
 | Textures | 9 |
+| Scenes (VHS tape, security camera, datamosh, failing satellite...) | 10 |
+| Rhythm (tempo-synced grids, gates, shredders) | 7 |
+| Instruments (guitar, vocal, drums, bass, synth, mix bus) | 13 |
 
 Choosing a preset sets **every** control and informs the host, so automation and the UI always agree. Touching any control marks the preset *modified*. Reloading a project restores your exact settings, not the preset's.
 
@@ -120,10 +131,10 @@ cmake --build build_win                                   # -> build_win/dist/Ra
 ### Tests and tools
 
 ```
-build/rd_test             # 3,611 DSP checks (parameter maths, bit-exact clean path, tear delays,
+build/rd_test             # 6,656 DSP checks (parameter maths, bit-exact clean path, tear delays,
                           # dropouts, smear, sync loss, loop, tempo lock, block-size independence
                           # for every preset, NaN/overflow fuzzing)
-build/rd_test_controller  # 35 checks: preset selection updates every parameter, user presets, state restore
+build/rd_test_controller  # 31 checks: preset selection updates every parameter, user presets, state restore
 build/rd_render --demo demo.wav --preset "Tracking Error VHS"    # hear a preset without a DAW
 ```
 
@@ -146,8 +157,8 @@ prebuilt/                Windows 64-bit build
 ## Status and limits
 
 - VST3 only (no VST2). Stereo and mono, 32/64-bit processing.
-- Prebuilt binary is Windows x64. It was cross-compiled with MinGW-w64 and tested under Wine, not yet across many real DAWs. Please open an issue with your host and the output of `check_plugin.bat` if something fails.
-- macOS builds the DSP/plugin but without the GUI; the Visual Studio (MSVC) build path is untested.
+- The Windows build was cross-compiled with MinGW-w64 and tested under Wine, not yet across many real DAWs. Please open an issue with your host and the output of `check_plugin.bat` if something fails.
+- macOS builds the DSP/plugin but without the custom editor; the Visual Studio (MSVC) build path is untested.
 - Parameter ids and the saved-state format are versioned. Do not renumber `ParamId` once you have saved projects.
 
 ## Licence

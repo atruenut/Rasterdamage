@@ -153,11 +153,24 @@ tresult PLUGIN_API RasterController::setParamNormalized (ParamID tag, ParamValue
 		return res;
 	if (tag == kPresetParam)
 	{
-		// The host's own preset/program selector was used.
+		// The host's own preset/program selector (or an echo of our own announcement, or a state
+		// restore). Never call back into the host from here: this may run on any thread. The
+		// processor loads the same preset by itself when it receives the program change, so we
+		// only mirror the values locally. A repeat of the current program is ignored.
 		const int idx = static_cast<int> (std::lround (clamp01 (value) * (kNumPresets - 1)));
+		if (idx == factoryIndex_)
+			return res;
 		ParamSet ps;
 		loadPreset (idx, ps);
-		applyParams (ps, kPresets[idx].name, idx, false); // host already knows the program value
+		applying_ = true;
+		for (int i = 0; i < kNumParams; ++i)
+			if (isPresetParam (i))
+				EditControllerEx1::setParamNormalized (static_cast<ParamID> (i), toNormalized (spec (i), ps[i]));
+		applying_ = false;
+		factoryIndex_ = idx;
+		setName (kPresets[idx].name);
+		modified_ = false;
+		++revision_;
 	}
 	else if (tag < static_cast<ParamID> (kNumParams) && isPresetParam (static_cast<int> (tag)))
 		markModified ();
@@ -195,6 +208,7 @@ void RasterController::editParam (int id, double normalized)
 void RasterController::applyParams (const ParamSet& p, const std::string& name, int factoryIndex, bool announceProgram)
 {
 	applying_ = true;
+	factoryIndex_ = factoryIndex;
 	startGroupEdit ();
 	for (int i = 0; i < kNumParams; ++i)
 	{
@@ -217,7 +231,7 @@ void RasterController::applyParams (const ParamSet& p, const std::string& name, 
 	finishGroupEdit ();
 	applying_ = false;
 	factoryIndex_ = factoryIndex;
-	presetName_ = name;
+	setName (name);
 	modified_ = false;
 	++revision_;
 }
@@ -245,7 +259,7 @@ bool RasterController::saveUserPreset (const std::filesystem::path& file, const 
 {
 	if (!savePresetFile (file, name, currentParams ()))
 		return false;
-	presetName_ = name;
+	setName (name);
 	modified_ = false;
 	++revision_;
 	return true;
@@ -259,7 +273,7 @@ tresult PLUGIN_API RasterController::getState (IBStream* state)
 	IBStreamer s (state, kLittleEndian);
 	s.writeInt32 (1);
 	s.writeInt32 (modified_ ? 1 : 0);
-	s.writeStr8 (presetName_.c_str ());
+	s.writeStr8 (presetName ().c_str ());
 	return kResultOk;
 }
 
@@ -274,7 +288,7 @@ tresult PLUGIN_API RasterController::setState (IBStream* state)
 	char8* str = s.readStr8 ();
 	if (str)
 	{
-		presetName_ = str;
+		setName (str);
 		delete[] str;
 	}
 	modified_ = modified != 0;

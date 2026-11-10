@@ -1,6 +1,8 @@
 #include "RasterProcessor.h"
 #include "RasterCids.h"
 #include "RasterPresets.h"
+#include "RasterPresetIO.h"
+#include <cmath>
 
 #include <algorithm>
 #include "base/source/fstreamer.h"
@@ -62,6 +64,7 @@ tresult PLUGIN_API RasterProcessor::setupProcessing (ProcessSetup& setup)
 		tmpIn_[c].assign (static_cast<size_t> (std::max (1, setup.maxSamplesPerBlock)), 0.f);
 		tmpOut_[c].assign (static_cast<size_t> (std::max (1, setup.maxSamplesPerBlock)), 0.f);
 	}
+	events_.reserve (8192);
 	dirty_ = true;
 	return AudioEffect::setupProcessing (setup);
 }
@@ -85,9 +88,22 @@ void RasterProcessor::applyEvent (ParamID id, double v)
 {
 	if (id == kPresetParam)
 	{
-		// Only remembered for the saved state. The *controller* applies a preset by changing the
-		// individual parameters through the host, so they arrive here as normal changes.
+		// A program change from the host's own preset menu: load that sound here as well (the
+		// controller mirrors it without calling back into the host). Our own editor announces
+		// the individual parameters too, with identical values. A repeat of the current program,
+		// e.g. a host re-sending it while restoring a project, must not overwrite the settings.
 		preset_ = clamp01 (v);
+		const int idx = static_cast<int> (std::lround (preset_ * (kNumPresets - 1)));
+		if (idx != presetIdx_ && idx >= 0 && idx < kNumPresets)
+		{
+			presetIdx_ = idx;
+			ParamSet ps;
+			loadPreset (idx, ps);
+			for (int i = 0; i < kNumParams; ++i)
+				if (isPresetParam (i))
+					norm_[i] = toNormalized (spec (i), ps[i]);
+			dirty_ = true;
+		}
 	}
 	else if (id < static_cast<ParamID> (kNumParams))
 	{
@@ -120,7 +136,22 @@ void RasterProcessor::runSegment (ProcessData& data, int start, int end)
 		return;
 	AudioBusBuffers& in = data.inputs[0];
 	AudioBusBuffers& out = data.outputs[0];
-	const int numCh = static_cast<int> (std::min (std::min (in.numChannels, out.numChannels), 2));
+	int numCh = static_cast<int> (std::min (std::min (in.numChannels, out.numChannels), 2));
+	if (numCh < 0)
+		numCh = 0;
+	for (int c = 0; c < numCh; ++c)
+	{
+		const bool ok = data.symbolicSampleSize == kSample32 ?
+		                    (in.channelBuffers32 && out.channelBuffers32 && in.channelBuffers32[c] && out.channelBuffers32[c]) :
+		                    (in.channelBuffers64 && out.channelBuffers64 && in.channelBuffers64[c] && out.channelBuffers64[c]);
+		if (!ok)
+		{
+			numCh = c; // a missing channel buffer: process only what is valid, never dereference null
+			break;
+		}
+	}
+	if (numCh == 0)
+		return;
 
 	if (data.symbolicSampleSize == kSample32)
 	{
@@ -166,7 +197,8 @@ tresult PLUGIN_API RasterProcessor::process (ProcessData& data)
 				int32 offset = 0;
 				ParamValue v = 0.0;
 				if (q->getPoint (k, offset, v) == kResultTrue)
-					events_.push_back ({std::max (0, offset), id, v});
+					if (events_.size () < 65536)
+						events_.push_back ({std::max (0, offset), id, v});
 			}
 		}
 		std::stable_sort (events_.begin (), events_.end (),
@@ -186,7 +218,7 @@ tresult PLUGIN_API RasterProcessor::process (ProcessData& data)
 		engine_.setTransport (false, false, 0.0, false, 0.0);
 
 	const int n = data.numSamples;
-	const bool haveAudio = n > 0 && data.numInputs > 0 && data.numOutputs > 0;
+	const bool haveAudio = n > 0 && data.numInputs > 0 && data.numOutputs > 0 && data.inputs && data.outputs;
 
 	if (haveAudio && data.symbolicSampleSize == kSample64 && static_cast<int> (tmpIn_[0].size ()) < n)
 		for (int c = 0; c < 2; ++c)
@@ -269,7 +301,10 @@ tresult PLUGIN_API RasterProcessor::setState (IBStream* state)
 	}
 	double pr = 0.0;
 	if (s.readDouble (pr))
+	{
 		preset_ = clamp01 (pr);
+		presetIdx_ = static_cast<int> (std::lround (preset_ * (kNumPresets - 1)));
+	}
 	dirty_ = true;
 	return kResultOk;
 }

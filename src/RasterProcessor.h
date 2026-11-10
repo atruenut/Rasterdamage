@@ -46,6 +46,7 @@ private:
 	Engine engine_;
 	double norm_[kNumParams];
 	double preset_ = 0.0;
+	int presetIdx_ = -1;
 	bool dirty_ = true;
 	bool lastTrigger_ = false;
 	int channels_ = 2;

@@ -89,17 +89,18 @@ int main ()
 			const double w = toNormalized (spec (i), want[i]);
 			if (std::fabs (c->getParamNormalized (i) - w) > 1e-9)
 				++wrong;
-			auto it = host.performed.find (static_cast<ParamID> (i));
-			if (it == host.performed.end () || std::fabs (it->second - w) > 1e-9)
-				++wrong;
 		}
-		CHECK (wrong == 0, "preset %d: %d parameters not updated/announced", idx, wrong);
-		CHECK (host.performs == countPresetParams (), "preset %d: host told about %d params, expected %d", idx, host.performs, countPresetParams ());
-		CHECK (host.begins == host.ends, "begin/end balanced");
+		CHECK (wrong == 0, "preset %d: %d parameters not mirrored", idx, wrong);
+		CHECK (host.performs == 0, "host-selected preset must not call back into the host (got %d)", host.performs);
 		CHECK (c->presetName () == kPresets[idx].name && !c->presetModified () && c->factoryIndex () == idx, "preset %d name/state", idx);
 	}
 
-	std::printf("editing a knob marks the preset modified\n");
+	std::printf ("a repeat of the current program (host re-sending it on load) does not overwrite edits\n");
+	c->setParamNormalized (kTearDepth, 0.123);
+	c->setParamNormalized (kPresetParam, 0.0);
+	CHECK (std::fabs (c->getParamNormalized (kTearDepth) - 0.123) < 1e-9, "same program ignored");
+
+	std::printf ("editing a knob marks the preset modified\n");
 	host.reset ();
 	c->editParam (kTearDepth, 0.9);
 	CHECK (c->presetModified (), "modified");

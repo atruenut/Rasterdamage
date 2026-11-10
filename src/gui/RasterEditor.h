@@ -1,6 +1,8 @@
 // Raster Damage - VST3 editor (VSTGUI): hosts the UI and connects it to the controller.
 #pragma once
 
+#include <memory>
+
 #include "RasterController.h"
 #include "RasterUI.h"
 #include "public.sdk/source/vst/vstguieditor.h"
@@ -35,6 +37,9 @@ private:
 	RasterController* ctrl_;
 	VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> timer_;
 	ui::RasterUI* ui_ = nullptr;
+	// Menus and file dialogs finish asynchronously; their callbacks check this so they never touch
+	// an editor that was closed (or destroyed) while the menu/dialog was open.
+	std::shared_ptr<bool> alive_ = std::make_shared<bool> (true);
 };
 
 } // namespace rd

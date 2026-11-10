@@ -6,10 +6,12 @@
 
 #include "vstgui/lib/platform/win32/win32taskexecutor.h"
 #include "vstgui/lib/vstguidebug.h"
-#include "vstgui/lib/platform/common/threadpooltaskexecutor.h"
 #include <atomic>
 #include <string>
 #include <thread>
+#include <algorithm>
+#include <chrono>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -108,34 +110,27 @@ struct MainQueue final : Queue
 //------------------------------------------------------------------------
 struct BackgroundQueue final : Queue
 {
-	explicit BackgroundQueue (Tasks::Detail::ThreadPool& p) : Queue (1u), pool (p) {}
+	BackgroundQueue () : Queue (1u) {}
+	// No worker threads: a plugin that spawns threads at load can crash the host when it unloads
+	// the DLL without calling ExitDll. The editor needs no background work, so run inline.
 	void schedule (Tasks::Task&& t) const override
 	{
 		++numTasks;
-		pool.enqueue ([this, task = std::move (t)] () mutable {
-			task ();
-			--numTasks;
-		});
+		t ();
+		--numTasks;
 	}
-	Tasks::Detail::ThreadPool& pool;
 };
 
 //------------------------------------------------------------------------
 struct SerialQueue final : Queue
 {
-	SerialQueue (Tasks::Detail::ThreadPool& pool, const char* n, uint64_t queueId)
-	: Queue (queueId), queue (pool, queueId, n ? n : "")
-	{
-	}
+	SerialQueue (uint64_t queueId) : Queue (queueId) {}
 	void schedule (Tasks::Task&& t) const override
 	{
 		++numTasks;
-		queue.schedule ([this, task = std::move (t)] () mutable {
-			task ();
-			--numTasks;
-		});
+		t ();
+		--numTasks;
 	}
-	mutable Tasks::Detail::SerialQueue queue;
 };
 
 //------------------------------------------------------------------------
@@ -145,8 +140,7 @@ struct SerialQueue final : Queue
 struct Win32TaskExecutor::Impl
 {
 	std::unique_ptr<Detail::MainQueue> mainQueue;
-	Tasks::Detail::ThreadPool threadPool {2};
-	Detail::BackgroundQueue backgroundQueue {threadPool};
+	Detail::BackgroundQueue backgroundQueue;
 	std::vector<std::shared_ptr<Detail::SerialQueue>> serialQueues;
 	std::mutex serialQueueLock;
 	std::thread::id mainThreadId {std::this_thread::get_id ()};
@@ -206,10 +200,10 @@ const Tasks::Queue& Win32TaskExecutor::getBackgroundQueue () const
 }
 
 //------------------------------------------------------------------------
-Tasks::Queue Win32TaskExecutor::makeSerialQueue (const char* name) const
+Tasks::Queue Win32TaskExecutor::makeSerialQueue (const char*) const
 {
 	impl->serialQueueLock.lock ();
-	auto serialQueue = std::make_shared<Detail::SerialQueue> (impl->threadPool, name, impl->nextSerialQueueID++);
+	auto serialQueue = std::make_shared<Detail::SerialQueue> (impl->nextSerialQueueID++);
 	impl->serialQueues.emplace_back (serialQueue);
 	impl->serialQueueLock.unlock ();
 	return serialQueue->queueID;

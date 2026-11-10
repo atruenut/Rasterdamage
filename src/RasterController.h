@@ -4,7 +4,9 @@
 #include "RasterParams.h"
 #include "public.sdk/source/vst/vsteditcontroller.h"
 
+#include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <string>
 
 namespace rd {
@@ -36,7 +38,11 @@ public:
 	bool loadUserPreset (const std::filesystem::path& file);
 	bool saveUserPreset (const std::filesystem::path& file, const std::string& name);
 
-	const std::string& presetName () const { return presetName_; }
+	std::string presetName () const
+	{
+		std::lock_guard<std::mutex> g (nameLock_);
+		return presetName_;
+	}
 	bool presetModified () const { return modified_; }
 	// Increments whenever the preset name / modified flag changes (editors poll this).
 	int presetRevision () const { return revision_; }
@@ -46,12 +52,21 @@ public:
 private:
 	void markModified ();
 
+	void setName (const std::string& n)
+	{
+		std::lock_guard<std::mutex> g (nameLock_);
+		presetName_ = n;
+	}
+
+	// Hosts may call setParamNormalized from threads other than the UI thread (automation playback),
+	// so everything touched from there is atomic or locked.
+	mutable std::mutex nameLock_;
 	std::string presetName_ = "Default";
-	bool modified_ = false;
-	bool applying_ = false;
-	bool loadingState_ = false;
-	int revision_ = 0;
-	int factoryIndex_ = -1;
+	std::atomic<bool> modified_ {false};
+	std::atomic<bool> applying_ {false};
+	std::atomic<bool> loadingState_ {false};
+	std::atomic<int> revision_ {0};
+	std::atomic<int> factoryIndex_ {-1};
 };
 
 } // namespace rd

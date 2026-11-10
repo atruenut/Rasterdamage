@@ -112,6 +112,7 @@ public:
 		}
 		reset ();
 		setParams (params);
+		prepared = true;
 	}
 
 	void reset ()
@@ -229,6 +230,14 @@ public:
 	// Process `n` samples. in/out may alias (in-place) and hold `numCh` channels.
 	void process (const float* const* in, float* const* out, int n, int numCh)
 	{
+		if (!prepared || n <= 0)
+		{
+			// not prepared yet (host calling process early): pass the audio through untouched
+			for (int c = 0; c < numCh && n > 0; ++c)
+				if (in[c] && out[c] && in[c] != out[c])
+					std::memcpy (out[c], in[c], sizeof (float) * static_cast<size_t> (n));
+			return;
+		}
 		const int channels = std::min (numCh, nch);
 		if (!started)
 		{
@@ -813,6 +822,7 @@ private:
 	int64_t frameIndex = 0;
 	double framePos = 0.0, curLen = 1.0;
 	bool started = false;
+	bool prepared = false;
 	bool pendingTrigger = false;
 	int64_t manualStart = -1000000;
 	double env = 0.0;

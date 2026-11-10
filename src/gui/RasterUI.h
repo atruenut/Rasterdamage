@@ -6,13 +6,15 @@
 #include "RasterParams.h"
 #include "vstgui/vstgui.h"
 
+#include <random>
 #include <string>
+#include <vector>
 
 namespace rd {
 namespace ui {
 
 static const int kWidth = 1000;
-static const int kHeight = 676;
+static const int kHeight = 616;
 
 class Host
 {
@@ -45,10 +47,19 @@ class RasterUI : public VSTGUI::CViewContainer
 {
 public:
 	explicit RasterUI (Host* host);
-	// call ~30x per second: pulls parameter values / preset name, animates the raster display
+	// call ~30x per second: pulls parameter values and the preset name
 	void tick (double dtSeconds);
 
 private:
+	void snapshot ();
+	void undo ();
+	void randomize (int unit); // unit < 0: every section
+	void resetUnit (int unit);
+
+	Host* host_;
+	std::mt19937 rng_;
+	std::vector<double> undo_;
+	bool haveUndo_ = false;
 	std::vector<Syncable*> syncables_;
 };
 

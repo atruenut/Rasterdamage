@@ -1,5 +1,4 @@
 #include "RasterUI.h"
-#include "RasterEngine.h"
 #include "RasterPresets.h"
 
 #include "vstgui/lib/controls/coptionmenu.h"
@@ -8,7 +7,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <chrono>
 #include <functional>
+#include <random>
 
 using namespace VSTGUI;
 
@@ -130,6 +131,62 @@ static std::string valueText (int id, double norm)
 }
 
 //------------------------------------------------------------------------
+// Hints: hovering any control explains it in the bar at the bottom
+//------------------------------------------------------------------------
+struct Hint
+{
+	virtual ~Hint () = default;
+	virtual void show (int id) = 0;
+};
+struct Hinted
+{
+	Hint* hint = nullptr;
+	int hintId = -1;
+	void hoverEnter () { if (hint) hint->show (hintId); }
+	void hoverLeave () { if (hint) hint->show (-1); }
+};
+
+static const char* const kHintText[kNumParams] = {
+	/* kSliceTime   */ "Length of each slice (frame) the signal is cut into. Short = buzzy and grainy, long = rhythmic glitches.",
+	/* kTempoSync   */ "Lock the slice length to the host tempo so damage lands on the beat.",
+	/* kTempoDiv    */ "Slice length as a note value (used when Sync is on).",
+	/* kSliceJitter */ "Randomly varies every slice's length for an unstable, drifting feel.",
+	/* kFrameLoop   */ "Repeat the same N slices of damage forever. Off = the pattern never repeats.",
+	/* kSeed        */ "Picks a different random pattern. The same seed always gives the same damage.",
+	/* kDamage      */ "Master amount: scales how many slices are damaged and how hard.",
+	/* kInputFollow */ "Ties damage to input level. + : louder = more damage (hits). - : quieter = more damage (the gaps).",
+	/* kInterlace   */ "Damage only even or odd slices, or alternate slices between left and right.",
+	/* kTearAmount  */ "How many slices get torn, i.e. pushed earlier or later in time.",
+	/* kTearDepth   */ "Largest time shift a torn slice can receive. Small = flutter, large = obvious displacement.",
+	/* kTearShape   */ "How shifts are distributed: random, stair-stepped, skewed, sine or zigzag.",
+	/* kTearSlew    */ "How smoothly the shift glides inside a slice. Low = hard digital edge, high = pitch-bendy tape.",
+	/* kGhost       */ "Feeds delayed audio back so torn slices leave echoes behind.",
+	/* kLinePeriod  */ "Length of the scanline pattern, in lines per slice.",
+	/* kLineMissing */ "How many lines out of every period are dropped.",
+	/* kLinePhase   */ "Slides the dropout pattern against the slice.",
+	/* kLineChaos   */ "Replaces the strict pattern with random dropouts at the same average density.",
+	/* kLineMode    */ "What replaces a dropped line: silence, noise, the previous line, an inverted copy or a held sample.",
+	/* kLineDepth   */ "How completely a dropped line is replaced. Lower = partial ducking.",
+	/* kLineEdge    */ "Fade time at the edge of each dropout. 0 = hard, clicky digital cuts.",
+	/* kSmearAmount */ "How many slices get smeared.",
+	/* kSmearMode   */ "Average blurs, Sample-Hold steps, Bleed leaves trails, Crunch quantises.",
+	/* kSmearSize   */ "Width of the smear window. Bigger = duller and lower-resolution.",
+	/* kColorDepth  */ "Bit depth of smeared slices. Lower = harsher crunch.",
+	/* kLossRate    */ "How often a sync-loss burst starts.",
+	/* kLossLength  */ "How many slices a burst lasts.",
+	/* kLossIntensity*/"How violent the timing disruption is during a burst.",
+	/* kLossStyle   */ "Jitter wobbles, Roll scrolls the signal, Stutter repeats it, Chaos mixes all three.",
+	/* kLossTrigger */ "Hold to fire a sync-loss burst right now.",
+	/* kBandwidth   */ "Low-pass filter on the damaged signal. Lower = darker, tamer highs.",
+	/* kStatic      */ "Level of the snow/noise used by Snow dropouts and sync-loss bursts. Minimum = off.",
+	/* kDrive       */ "Saturation applied after the damage.",
+	/* kFieldSplit  */ "How often the right channel gets its own, independent damage. 0 = identical (mono-safe).",
+	/* kMix         */ "Dry/wet. Keep at 100% for only the damaged sound.",
+	/* kOutGain     */ "Output level.",
+	/* kBypass      */ "Bypass the effect (latency-matched).",
+};
+
+//------------------------------------------------------------------------
 // Panel (metaphor group) and plain label
 //------------------------------------------------------------------------
 class RdPanel : public CView
@@ -181,14 +238,17 @@ private:
 //------------------------------------------------------------------------
 // Knob
 //------------------------------------------------------------------------
-class RdKnob : public CView, public Syncable
+class RdKnob : public CView, public Syncable, public Hinted
 {
 public:
 	RdKnob (const CRect& r, Host* host, int id, CColor accent, double dia = 40)
 	: CView (r), host_ (host), id_ (id), accent_ (accent), dia_ (dia)
 	{
 		norm_ = host->getParam (id);
+		hintId = id;
 	}
+	void onMouseEnterEvent (MouseEnterEvent& e) override { hoverEnter (); e.consumed = true; }
+	void onMouseExitEvent (MouseExitEvent& e) override { hoverLeave (); e.consumed = true; }
 
 	void sync (double) override
 	{
@@ -316,12 +376,13 @@ private:
 //------------------------------------------------------------------------
 // Drop-down for list parameters
 //------------------------------------------------------------------------
-class RdChoice : public CView, public Syncable
+class RdChoice : public CView, public Syncable, public Hinted
 {
 public:
 	RdChoice (const CRect& r, Host* host, int id, CColor accent) : CView (r), host_ (host), id_ (id), accent_ (accent)
 	{
 		norm_ = host->getParam (id);
+		hintId = id;
 	}
 	void sync (double) override
 	{
@@ -346,12 +407,14 @@ public:
 	void onMouseEnterEvent (MouseEnterEvent& e) override
 	{
 		hover_ = true;
+		hoverEnter ();
 		invalid ();
 		e.consumed = true;
 	}
 	void onMouseExitEvent (MouseExitEvent& e) override
 	{
 		hover_ = false;
+		hoverLeave ();
 		invalid ();
 		e.consumed = true;
 	}
@@ -392,14 +455,17 @@ private:
 //------------------------------------------------------------------------
 // Toggle / momentary button for toggle parameters
 //------------------------------------------------------------------------
-class RdToggle : public CView, public Syncable
+class RdToggle : public CView, public Syncable, public Hinted
 {
 public:
 	RdToggle (const CRect& r, Host* host, int id, std::string label, CColor accent, bool momentary = false)
 	: CView (r), host_ (host), id_ (id), label_ (std::move (label)), accent_ (accent), momentary_ (momentary)
 	{
 		on_ = host->getParam (id) >= 0.5;
+		hintId = id;
 	}
+	void onMouseEnterEvent (MouseEnterEvent& e) override { hoverEnter (); e.consumed = true; }
+	void onMouseExitEvent (MouseExitEvent& e) override { hoverLeave (); e.consumed = true; }
 	void sync (double) override
 	{
 		const bool v = host_->getParam (id_) >= 0.5;
@@ -544,334 +610,337 @@ private:
 };
 
 //------------------------------------------------------------------------
-// The live raster: one row per slice, drawn from the engine's real per-slice decisions
+// Small pill button (RND / RST in every section header)
 //------------------------------------------------------------------------
-class RdRaster : public CView, public Syncable
+class RdMini : public CView, public Hinted
 {
 public:
-	RdRaster (const CRect& r, Host* host) : CView (r), host_ (host)
+	RdMini (const CRect& r, std::string label, CColor accent, std::function<void ()> cb)
+	: CView (r), label_ (std::move (label)), accent_ (accent), cb_ (std::move (cb))
 	{
-		eng_.prepare (48000.0, 2);
-		last_ = host_->params ();
-		eng_.setParams (last_);
-		setMouseEnabled (false);
 	}
-	void sync (double dt) override
-	{
-		const ParamSet p = host_->params ();
-		if (std::memcmp (p.v, last_.v, sizeof (p.v)) != 0)
-		{
-			last_ = p;
-			eng_.setParams (p);
-		}
-		scroll_ += dt * 9.0; // rows per second: the picture slowly rolls so you can see the pattern evolve
-		invalid ();
-	}
-
-	static CColor bar (int sub, bool negative)
-	{
-		static const CColor cols[8] = {CColor (232, 232, 226), CColor (222, 202, 70), CColor (66, 202, 214), CColor (88, 202, 98),
-		                               CColor (202, 78, 190), CColor (212, 68, 68),   CColor (66, 88, 212),  CColor (24, 27, 36)};
-		CColor c = cols[((sub / 2) % 8 + 8) % 8];
-		if (negative)
-			c = CColor (255 - c.red, 255 - c.green, 255 - c.blue, 255);
-		return c;
-	}
-
 	void draw (CDrawContext* c) override
 	{
 		c->setDrawMode (kAntiAliasing | kNonIntegralMode);
 		const CRect r = getViewSize ();
-		roundRect (c, r, 9, pal::panel, &pal::panelEdge);
-		CRect bar0 (r.left + 1, r.top + 12, r.left + 4, r.top + 26);
-		c->setFillColor (pal::scan);
-		c->drawRect (bar0, kDrawFilled);
-		text (c, "LIVE RASTER", CRect (r.left + 12, r.top + 8, r.right - 8, r.top + 28), pal::scan, 13, true, kLeftText);
-		text (c, "what each slice is doing", CRect (r.left + 12, r.top + 9, r.right - 12, r.top + 28), pal::dim, 11, false, kRightText);
+		roundRect (c, r, 4, down_ ? mixColor (pal::panel, accent_, 0.5) : (hover_ ? CColor (58, 64, 80) : CColor (40, 44, 56)), &pal::panelEdge);
+		text (c, label_, r, hover_ ? accent_ : pal::dim, 9, true);
+	}
+	void onMouseEnterEvent (MouseEnterEvent& e) override { hover_ = true; invalid (); e.consumed = true; }
+	void onMouseExitEvent (MouseExitEvent& e) override { hover_ = false; down_ = false; invalid (); e.consumed = true; }
+	void onMouseDownEvent (MouseDownEvent& e) override
+	{
+		if (!e.buttonState.isLeft ())
+			return;
+		down_ = true;
+		invalid ();
+		e.consumed = true;
+	}
+	void onMouseUpEvent (MouseUpEvent& e) override
+	{
+		if (down_ && hitTest (e.mousePosition))
+			cb_ ();
+		down_ = false;
+		invalid ();
+		e.consumed = true;
+	}
 
-		const CRect pic (r.left + 12, r.top + 34, r.right - 12, r.bottom - 34);
-		c->setFillColor (CColor (6, 7, 10));
-		c->drawRect (pic, kDrawFilled);
-		const double gutter = 22;
-		const CRect img (pic.left + gutter, pic.top + 2, pic.right - 2, pic.bottom - 2);
-		const int rows = 56;
-		const double rowH = img.getHeight () / rows;
-		const int64_t base = static_cast<int64_t> (std::floor (scroll_));
-		const double frac = scroll_ - std::floor (scroll_);
+private:
+	std::string label_;
+	CColor accent_;
+	std::function<void ()> cb_;
+	bool hover_ = false, down_ = false;
+};
 
-		c->saveGlobalState ();
-		c->setClipRect (pic);
-		const int smearMode = static_cast<int> (std::lround (last_[kSmearMode]));
-		const int lineMode = static_cast<int> (std::lround (last_[kLineMode]));
-		const double depth = last_[kLineDepth] * 0.01;
-		const int bits = static_cast<int> (std::lround (last_[kColorDepth]));
-		const double sizeMs = last_[kSmearSize];
-		const int group = std::max (2, std::min (8, 2 + static_cast<int> (std::log2 (std::max (0.1, sizeMs / 0.1)) * 0.9)));
-		const int K = 48;
-		const double cw = img.getWidth () / K;
-
-		for (int i = 0; i < rows + 1; ++i)
+//------------------------------------------------------------------------
+// Hint bar: name, current value and a one-line explanation of whatever is under the mouse
+//------------------------------------------------------------------------
+class RdHintBar : public CView, public Syncable, public Hint
+{
+public:
+	RdHintBar (const CRect& r, Host* host) : CView (r), host_ (host) { setMouseEnabled (false); }
+	void show (int id) override
+	{
+		if (id != id_)
 		{
-			const int64_t f = base + i;
-			const auto fc = eng_.previewFrame (f, 0, 0.8);
-			const double y0 = img.top + (i - frac) * rowH;
-			CRect row (img.left, y0, img.right, y0 + rowH - 1);
-
-			// horizontal displacement in sub-cells
-			double shift = 0.0;
-			const double depthS = std::max (1.0, eng_.tearDepthSamples ());
-			shift += (fc.tearStart + fc.tearEnd) * 0.5 / depthS * 7.0;
-			if (fc.lossStyle == kLossJitter)
-				shift += (fc.jit0 + fc.jit1) * 0.5 / 7200.0 * 6.0;
-			else if (fc.lossStyle == kLossRoll)
-				shift += (fc.rollStart + fc.rollEnd) * 0.5 / 28800.0 * 24.0;
-			const int sh = static_cast<int> (std::lround (shift));
-
-			CColor cells[K];
-			for (int k = 0; k < K; ++k)
+			id_ = id;
+			invalid ();
+		}
+	}
+	void sync (double) override
+	{
+		if (id_ >= 0 && id_ < kNumParams)
+		{
+			const std::string v = valueText (id_, host_->getParam (id_));
+			if (v != value_)
 			{
-				int src = k - sh;
-				if (fc.lossStyle == kLossStutter)
-					src = (k % std::max (1, K / fc.stutDiv)) - sh;
-				cells[k] = bar (src, false);
-			}
-			if (fc.smear)
-			{
-				CColor sm[K];
-				for (int k = 0; k < K; ++k)
-				{
-					const int g0 = (k / group) * group;
-					switch (smearMode)
-					{
-						case kSmearAverage:
-						{
-							int rr = 0, gg = 0, bb = 0, n = 0;
-							for (int j = g0; j < std::min (K, g0 + group); ++j, ++n)
-								rr += cells[j].red, gg += cells[j].green, bb += cells[j].blue;
-							sm[k] = CColor (rr / n, gg / n, bb / n, 255);
-							break;
-						}
-						case kSmearBleed: sm[k] = k == 0 ? cells[0] : mixColor (sm[k - 1], cells[k], 0.28); break;
-						default: sm[k] = cells[g0]; break; // hold / crunch
-					}
-					if (smearMode == kSmearCrunch || bits < 16)
-					{
-						const int lv = std::max (2, std::min (8, bits < 16 ? bits - 1 : 3));
-						auto q = [lv] (uint8_t v) { return static_cast<uint8_t> (std::floor (v / 255.0 * (lv - 1) + 0.5) * 255.0 / (lv - 1)); };
-						sm[k] = CColor (q (sm[k].red), q (sm[k].green), q (sm[k].blue), 255);
-					}
-				}
-				for (int k = 0; k < K; ++k)
-					cells[k] = sm[k];
-			}
-			if (fc.dropped)
-			{
-				const CColor black (5, 5, 8);
-				for (int k = 0; k < K; ++k)
-				{
-					CColor d = black;
-					switch (lineMode)
-					{
-						case kLineSnow:
-						{
-							const double u = hash01 (7, f, static_cast<uint32_t> (k), 77);
-							const uint8_t g = static_cast<uint8_t> (30 + u * 190);
-							d = CColor (g, g, g, 255);
-							break;
-						}
-						case kLinePrevious: d = bar (k + sh - 3, false); break;
-						case kLineNegative: d = bar (k - sh, true); break;
-						case kLineHold: d = cells[0]; break;
-						default: break;
-					}
-					cells[k] = mixColor (cells[k], d, depth);
-				}
-			}
-			for (int k = 0; k < K; ++k)
-			{
-				CRect cell (row.left + k * cw, row.top, row.left + (k + 1) * cw + 0.6, row.bottom);
-				c->setFillColor (cells[k]);
-				c->drawRect (cell, kDrawFilled);
-			}
-			if (fc.noiseGain > 0.0)
-			{
-				c->setFillColor (CColor (255, 255, 255, 150));
-				for (int n = 0; n < 6; ++n)
-				{
-					const double u = hash01 (3, f, static_cast<uint32_t> (n), 78);
-					c->drawRect (CRect (row.left + u * row.getWidth (), row.top, row.left + u * row.getWidth () + 2, row.bottom), kDrawFilled);
-				}
-			}
-			// gutter lanes: tear / dropout / smear / sync loss
-			const double lane = (gutter - 4) / 4.0;
-			const bool torn = std::fabs (shift) > 0.4 && fc.lossStyle < 0;
-			const bool flags[4] = {torn, fc.dropped, fc.smear, fc.lossStyle >= 0};
-			const CColor lc[4] = {pal::tear, pal::lines, pal::smear, pal::loss};
-			for (int l = 0; l < 4; ++l)
-			{
-				if (!flags[l])
-					continue;
-				c->setFillColor (lc[l]);
-				c->drawRect (CRect (pic.left + 2 + l * lane, row.top, pic.left + 2 + (l + 1) * lane - 1, row.bottom), kDrawFilled);
+				value_ = v;
+				invalid ();
 			}
 		}
-		c->restoreGlobalState ();
-		c->setFrameColor (pal::panelEdge);
-		c->setLineWidth (1);
-		c->drawRect (pic, kDrawStroked);
-
-		// legend
-		const char* names[4] = {"tear", "dropout", "smear", "sync loss"};
-		const CColor lc[4] = {pal::tear, pal::lines, pal::smear, pal::loss};
-		double x = r.left + 14;
-		for (int l = 0; l < 4; ++l)
+	}
+	void draw (CDrawContext* c) override
+	{
+		c->setDrawMode (kAntiAliasing | kNonIntegralMode);
+		const CRect r = getViewSize ();
+		roundRect (c, r, 7, CColor (22, 25, 32), &pal::panelEdge);
+		if (id_ >= 0 && id_ < kNumParams)
 		{
-			c->setFillColor (lc[l]);
-			c->drawRect (CRect (x, r.bottom - 22, x + 8, r.bottom - 14), kDrawFilled);
-			text (c, names[l], CRect (x + 11, r.bottom - 25, x + 70, r.bottom - 11), pal::dim, 10, false, kLeftText);
-			x += (l == 2 ? 62 : 56);
+			const ParamSpec& s = spec (id_);
+			const std::string title = s.name;
+			text (c, title, CRect (r.left + 12, r.top, r.left + 160, r.bottom), pal::text, 12, true, kLeftText);
+			text (c, value_, CRect (r.left + 160, r.top, r.left + 250, r.bottom), pal::scan, 12, true, kLeftText);
+			text (c, kHintText[id_], CRect (r.left + 255, r.top, r.right - 10, r.bottom), pal::dim, 11, false, kLeftText);
 		}
+		else
+			text (c, "Drag = change   |   Shift + drag = fine   |   Double-click = reset   |   Mouse wheel = nudge   |   RND / RST = randomise / reset one section",
+			     CRect (r.left + 12, r.top, r.right - 10, r.bottom), pal::dim, 11, false, kLeftText);
 	}
 
 private:
 	Host* host_;
-	Engine eng_;
-	ParamSet last_;
-	double scroll_ = 0;
+	int id_ = -1;
+	std::string value_;
 };
 
 //------------------------------------------------------------------------
 // Layout
 //------------------------------------------------------------------------
-RasterUI::RasterUI (Host* host) : CViewContainer (CRect (0, 0, kWidth, kHeight))
+namespace {
+struct Range
+{
+	double lo, hi;
+};
+// Sensible random ranges (normalised) so a roll never lands on something unusable.
+Range randomRange (int id)
+{
+	switch (id)
+	{
+		case kSliceTime: return {0.25, 0.8};
+		case kSliceJitter: return {0.0, 0.4};
+		case kFrameLoop: return {0.0, 0.25};
+		case kInputFollow: return {0.4, 0.7};
+		case kTearAmount: return {0.3, 1.0};
+		case kTearDepth: return {0.1, 0.8};
+		case kTearSlew: return {0.0, 0.8};
+		case kGhost: return {0.0, 0.5};
+		case kLinePeriod: return {0.0, 0.5};
+		case kLineMissing: return {0.0, 0.2};
+		case kLineChaos: return {0.0, 0.5};
+		case kLineDepth: return {0.5, 1.0};
+		case kLineEdge: return {0.0, 0.5};
+		case kSmearAmount: return {0.2, 1.0};
+		case kSmearSize: return {0.2, 0.8};
+		case kColorDepth: return {0.4, 1.0};
+		case kLossRate: return {0.05, 0.7};
+		case kLossLength: return {0.0, 0.3};
+		case kLossIntensity: return {0.3, 1.0};
+		case kBandwidth: return {0.45, 1.0};
+		case kStatic: return {0.0, 0.5};
+		case kDrive: return {0.0, 0.4};
+		default: return {0.0, 1.0};
+	}
+}
+// never touched by RND / RST
+bool isProtected (int id)
+{
+	return id == kBypass || id == kLossTrigger || id == kMix || id == kOutGain || id == kDamage || id == kTempoSync ||
+	       id == kTempoDiv;
+}
+} // namespace
+
+RasterUI::RasterUI (Host* host)
+: CViewContainer (CRect (0, 0, kWidth, kHeight)), host_ (host),
+  rng_ (static_cast<uint32_t> (std::chrono::steady_clock::now ().time_since_epoch ().count ()))
 {
 	setBackgroundColor (pal::bg);
-	auto add = [this] (CView* v) {
+	RdHintBar* hintBar = new RdHintBar (CRect (10, kHeight - 40, kWidth - 10, kHeight - 10), host);
+	auto add = [this, hintBar] (CView* v) {
 		addView (v);
 		if (auto* s = dynamic_cast<Syncable*> (v))
 			syncables_.push_back (s);
+		if (auto* h = dynamic_cast<Hinted*> (v))
+			h->hint = hintBar;
 		return v;
 	};
+	add (hintBar);
 
 	const double M = 10;
+	const double cw = 76, kh = 88; // knob cell
+	const double dia = 46;
 
 	// ---------------- header ----------------
-	add (new RdText (CRect (M + 4, 10, 300, 34), "RASTER DAMAGE", pal::text, 18, true, kLeftText));
-	add (new RdText (CRect (M + 4, 32, 300, 46), "scanline filter for audio", pal::dim, 10, false, kLeftText));
-	add (new RdButton (CRect (330, 12, 358, 44), "", RdButton::Prev, [host] (RdButton*) { host->presetStep (-1); }));
-	add (new RdPresetField (CRect (362, 12, 662, 44), host));
-	add (new RdButton (CRect (666, 12, 694, 44), "", RdButton::Next, [host] (RdButton*) { host->presetStep (1); }));
-	{
-		RdButton* saveBtn = new RdButton (CRect (704, 12, 764, 44), "Save", RdButton::None, [host] (RdButton* b) { host->presetSave (b->getFrame ()); });
-		RdButton* loadBtn = new RdButton (CRect (770, 12, 830, 44), "Load", RdButton::None, [host] (RdButton* b) { host->presetLoad (b->getFrame ()); });
-		RdButton* initBtn = new RdButton (CRect (836, 12, 896, 44), "Init", RdButton::None, [host] (RdButton*) { host->presetInit (); });
-		add (saveBtn);
-		add (loadBtn);
-		add (initBtn);
-	}
-	add (new RdToggle (CRect (912, 16, 990 - M + 10, 40), host, kBypass, "BYPASS", pal::loss));
+	add (new RdText (CRect (M + 4, 8, 240, 32), "RASTER DAMAGE", pal::text, 18, true, kLeftText));
+	add (new RdText (CRect (M + 4, 30, 240, 44), "scanline filter for audio", pal::dim, 10, false, kLeftText));
+	add (new RdButton (CRect (250, 10, 278, 44), "", RdButton::Prev, [host] (RdButton*) { host->presetStep (-1); }));
+	add (new RdPresetField (CRect (282, 10, 540, 44), host));
+	add (new RdButton (CRect (544, 10, 572, 44), "", RdButton::Next, [host] (RdButton*) { host->presetStep (1); }));
+	add (new RdButton (CRect (584, 10, 640, 44), "Save", RdButton::None, [host] (RdButton* b) { host->presetSave (b->getFrame ()); }));
+	add (new RdButton (CRect (644, 10, 700, 44), "Load", RdButton::None, [host] (RdButton* b) { host->presetLoad (b->getFrame ()); }));
+	add (new RdButton (CRect (704, 10, 760, 44), "Init", RdButton::None, [host] (RdButton*) { host->presetInit (); }));
+	add (new RdButton (CRect (772, 10, 868, 44), "Randomize", RdButton::None, [this] (RdButton*) { snapshot (); randomize (-1); }));
+	add (new RdButton (CRect (872, 10, 922, 44), "Undo", RdButton::None, [this] (RdButton*) { undo (); }));
+	add (new RdToggle (CRect (932, 15, kWidth - M, 39), host, kBypass, "BYPASS", pal::loss));
+
+	auto section = [&] (const CRect& r, const char* title, const char* sub, CColor col, int unit) {
+		add (new RdPanel (r, title, sub, col));
+		add (new RdMini (CRect (r.right - 78, r.top + 9, r.right - 46, r.top + 25), "RND", col, [this, unit] () { snapshot (); randomize (unit); }));
+		add (new RdMini (CRect (r.right - 42, r.top + 9, r.right - 10, r.top + 25), "RST", col, [this, unit] () { snapshot (); resetUnit (unit); }));
+	};
+	auto knob = [&] (double x, double y, int id, CColor col, double d = 46) { add (new RdKnob (CRect (x, y, x + cw, y + kh), host, id, col, d)); };
 
 	// ---------------- SCAN strip ----------------
-	const double scanY = 56, scanH = 116;
-	add (new RdPanel (CRect (M, scanY, kWidth - M, scanY + scanH), "SCAN", "cut the signal into frames", pal::scan));
+	const double scanY = 54, scanH = 124;
+	section (CRect (M, scanY, kWidth - M, scanY + scanH), "SCAN", "cut the signal into frames; it then flows through TEAR > SMEAR > SCANLINES > SYNC LOSS > OUTPUT", pal::scan, kUnitScan);
 	{
 		const double y = scanY + 32;
-		const double cw = 78, h = 76;
-		double x = M + 14;
-		add (new RdKnob (CRect (x, y, x + cw, y + h), host, kSliceTime, pal::scan));
-		x += cw;
-		// tempo sync block
-		add (new RdToggle (CRect (x + 4, y + 8, x + 74, y + 30), host, kTempoSync, "SYNC", pal::scan));
-		add (new RdChoice (CRect (x + 4, y + 34, x + 74, y + 72), host, kTempoDiv, pal::scan));
-		x += 82;
-		add (new RdKnob (CRect (x, y, x + cw, y + h), host, kSliceJitter, pal::scan));
-		x += cw;
-		add (new RdKnob (CRect (x, y, x + cw, y + h), host, kFrameLoop, pal::scan));
-		x += cw;
-		add (new RdKnob (CRect (x, y, x + cw, y + h), host, kSeed, pal::scan));
-		x += cw + 6;
-		add (new RdChoice (CRect (x, y + 14, x + 108, y + 52), host, kInterlace, pal::scan));
-		x += 124;
-		add (new RdKnob (CRect (x, y, x + cw, y + h), host, kInputFollow, pal::scan));
-		// big damage knob on the right
+		double x = M + 12;
+		knob (x, y, kSliceTime, pal::scan);
+		x += 84;
+		add (new RdToggle (CRect (x, y + 6, x + 82, y + 30), host, kTempoSync, "TEMPO SYNC", pal::scan));
+		add (new RdChoice (CRect (x, y + 38, x + 82, y + 78), host, kTempoDiv, pal::scan));
+		x += 92;
+		knob (x, y, kSliceJitter, pal::scan);
+		x += 84;
+		knob (x, y, kFrameLoop, pal::scan);
+		x += 84;
+		knob (x, y, kSeed, pal::scan);
+		x += 94;
+		add (new RdChoice (CRect (x, y + 20, x + 116, y + 60), host, kInterlace, pal::scan));
+		x += 130;
+		knob (x, y, kInputFollow, pal::scan);
+		// the master control, big, on the right
 		const double dx = kWidth - M - 150;
-		add (new RdText (CRect (dx, scanY + 8, dx + 140, scanY + 28), "DAMAGE", pal::text, 13, true, kCenterText));
-		add (new RdKnob (CRect (dx + 30, scanY + 28, dx + 110, scanY + 28 + 84), host, kDamage, pal::scan, 62));
+		add (new RdKnob (CRect (dx + 24, scanY + 30, dx + 116, scanY + 30 + 92), host, kDamage, pal::scan, 62));
 	}
 
-	// ---------------- middle: raster + 4 metaphor panels ----------------
-	const double midY = scanY + scanH + 10, midH = 372;
-	add (new RdRaster (CRect (M, midY, M + 290, midY + midH), host));
-	const double px = M + 290 + 10;
-	const double pw = (kWidth - M - px - 10) / 2;
-	const double ph = (midH - 10) / 2;
-	struct P
+	// ---------------- the four damage sections, in the order the audio flows ----------------
+	const double modY = scanY + scanH + 10, modH = 262;
+	const double pw = (kWidth - 2 * M - 3 * 10) / 4.0;
+	struct Mod
 	{
-		double x, y;
-		const char* t;
-		const char* s;
-		CColor c;
+		const char* title;
+		const char* sub;
+		CColor col;
+		int unit;
+		int modeId;
+		std::vector<int> knobs;
 	};
-	const P panels[4] = {{px, midY, "TEAR", "horizontal tearing", pal::tear},
-	                     {px + pw + 10, midY, "SCANLINES", "missing lines", pal::lines},
-	                     {px, midY + ph + 10, "SMEAR", "pixel smearing", pal::smear},
-	                     {px + pw + 10, midY + ph + 10, "SYNC LOSS", "timing bursts", pal::loss}};
-	for (const P& p : panels)
-		add (new RdPanel (CRect (p.x, p.y, p.x + pw, p.y + ph), p.t, p.s, p.c));
-
-	const double cw = 78, ch = 76;
-	auto knobAt = [&] (double px0, double py0, int col, int row, int id, CColor col2) {
-		const double x = px0 + 8 + col * cw, y = py0 + 32 + row * (ch + 2);
-		add (new RdKnob (CRect (x, y, x + cw, y + ch), host, id, col2));
-	};
-	// TEAR: 4 knobs + shape
-	knobAt (panels[0].x, panels[0].y, 0, 0, kTearAmount, pal::tear);
-	knobAt (panels[0].x, panels[0].y, 1, 0, kTearDepth, pal::tear);
-	knobAt (panels[0].x, panels[0].y, 2, 0, kTearSlew, pal::tear);
-	knobAt (panels[0].x, panels[0].y, 3, 0, kGhost, pal::tear);
-	add (new RdChoice (CRect (panels[0].x + 14, panels[0].y + 32 + ch + 8, panels[0].x + 14 + 130, panels[0].y + 32 + ch + 46), host, kTearShape, pal::tear));
-	// SCANLINES: 6 knobs (2 rows) + fill
-	knobAt (panels[1].x, panels[1].y, 0, 0, kLinePeriod, pal::lines);
-	knobAt (panels[1].x, panels[1].y, 1, 0, kLineMissing, pal::lines);
-	knobAt (panels[1].x, panels[1].y, 2, 0, kLinePhase, pal::lines);
-	knobAt (panels[1].x, panels[1].y, 3, 0, kLineChaos, pal::lines);
-	knobAt (panels[1].x, panels[1].y, 0, 1, kLineDepth, pal::lines);
-	knobAt (panels[1].x, panels[1].y, 1, 1, kLineEdge, pal::lines);
-	add (new RdChoice (CRect (panels[1].x + 8 + 2 * cw + 4, panels[1].y + 32 + ch + 22, panels[1].x + 8 + 4 * cw - 2, panels[1].y + 32 + ch + 60), host, kLineMode, pal::lines));
-	// SMEAR
-	knobAt (panels[2].x, panels[2].y, 0, 0, kSmearAmount, pal::smear);
-	knobAt (panels[2].x, panels[2].y, 1, 0, kSmearSize, pal::smear);
-	knobAt (panels[2].x, panels[2].y, 2, 0, kColorDepth, pal::smear);
-	add (new RdChoice (CRect (panels[2].x + 14, panels[2].y + 32 + ch + 8, panels[2].x + 14 + 130, panels[2].y + 32 + ch + 46), host, kSmearMode, pal::smear));
-	// SYNC LOSS
-	knobAt (panels[3].x, panels[3].y, 0, 0, kLossRate, pal::loss);
-	knobAt (panels[3].x, panels[3].y, 1, 0, kLossLength, pal::loss);
-	knobAt (panels[3].x, panels[3].y, 2, 0, kLossIntensity, pal::loss);
-	add (new RdChoice (CRect (panels[3].x + 14, panels[3].y + 32 + ch + 8, panels[3].x + 14 + 130, panels[3].y + 32 + ch + 46), host, kLossStyle, pal::loss));
-	add (new RdToggle (CRect (panels[3].x + 160, panels[3].y + 32 + ch + 22, panels[3].x + 160 + 120, panels[3].y + 32 + ch + 46), host, kLossTrigger, "FIRE NOW", pal::loss, true));
+	const Mod mods[4] = {
+	    {"TEAR", "time shifts", pal::tear, kUnitTear, kTearShape, {kTearAmount, kTearDepth, kTearSlew, kGhost}},
+	    {"SMEAR", "blur / hold", pal::smear, kUnitSmear, kSmearMode, {kSmearAmount, kSmearSize, kColorDepth}},
+	    {"SCANLINES", "dropouts", pal::lines, kUnitScanlines, kLineMode, {kLinePeriod, kLineMissing, kLinePhase, kLineChaos, kLineDepth, kLineEdge}},
+	    {"SYNC LOSS", "bursts", pal::loss, kUnitSyncLoss, kLossStyle, {kLossRate, kLossLength, kLossIntensity}}};
+	for (int m = 0; m < 4; ++m)
+	{
+		const double px = M + m * (pw + 10);
+		section (CRect (px, modY, px + pw, modY + modH), mods[m].title, mods[m].sub, mods[m].col, mods[m].unit);
+		add (new RdChoice (CRect (px + 12, modY + 32, px + pw - 12, modY + 72), host, mods[m].modeId, mods[m].col));
+		const double kx = px + (pw - 3 * cw) / 2;
+		for (size_t i = 0; i < mods[m].knobs.size (); ++i)
+			knob (kx + (i % 3) * cw, modY + 76 + (i / 3) * (kh + 2), mods[m].knobs[i], mods[m].col);
+	}
+	{
+		const double row2 = modY + 76 + kh + 2;
+		auto note = [&] (double x, double y, const char* l1, const char* l2) {
+			add (new RdText (CRect (x, y, x + 150, y + 14), l1, pal::dim, 10, false, kLeftText));
+			add (new RdText (CRect (x, y + 14, x + 150, y + 28), l2, pal::dim, 10, false, kLeftText));
+		};
+		const double tx = M, sx = M + (pw + 10), lx = M + 3 * (pw + 10);
+		note (tx + (pw - 3 * cw) / 2 + cw + 4, row2 + 30, "Pushes slices earlier or", "later. Ghost = echoes.");
+		note (sx + (pw - 3 * cw) / 2 + 6, row2 + 30, "Blurs or holds short windows.", "Bits = bit crush.");
+		add (new RdToggle (CRect (lx + 16, row2 + 14, lx + 150, row2 + 44), host, kLossTrigger, "FIRE NOW", pal::loss, true));
+		note (lx + 16, row2 + 54, "Hold to fire a burst. Rate", "sets how often they occur.");
+	}
 
 	// ---------------- OUTPUT strip ----------------
-	const double outY = midY + midH + 10, outH = kHeight - outY - M;
-	add (new RdPanel (CRect (M, outY, kWidth - M, outY + outH), "OUTPUT", "what comes out", pal::out));
+	const double outY = modY + modH + 10, outH = 118;
+	section (CRect (M, outY, kWidth - M, outY + outH), "OUTPUT", "tone, grit and level", pal::out, kUnitOutput);
 	{
 		const double y = outY + 26;
-		double x = M + 14;
+		double x = M + 12;
 		const int ids[4] = {kBandwidth, kStatic, kDrive, kFieldSplit};
 		for (int id : ids)
 		{
-			add (new RdKnob (CRect (x, y, x + cw, y + ch), host, id, pal::out));
-			x += cw + 6;
+			knob (x, y, id, pal::out);
+			x += cw + 8;
 		}
-		const double mx = kWidth - M - 14 - 2 * (cw + 6);
-		add (new RdKnob (CRect (mx, y, mx + cw, y + ch), host, kMix, pal::out));
-		add (new RdKnob (CRect (mx + cw + 6, y, mx + 2 * cw + 6, y + ch), host, kOutGain, pal::out));
+		const double mx = kWidth - M - 12 - 2 * (cw + 8);
+		knob (mx, y, kMix, pal::out);
+		knob (mx + cw + 8, y, kOutGain, pal::out);
 	}
 }
 
+//------------------------------------------------------------------------
 void RasterUI::tick (double dt)
 {
 	for (auto* s : syncables_)
 		s->sync (dt);
+}
+
+void RasterUI::snapshot ()
+{
+	undo_.assign (kNumParams, 0.0);
+	for (int i = 0; i < kNumParams; ++i)
+		undo_[static_cast<size_t> (i)] = host_->getParam (i);
+	haveUndo_ = true;
+}
+
+void RasterUI::undo ()
+{
+	if (!haveUndo_)
+		return;
+	for (int i = 0; i < kNumParams; ++i)
+	{
+		const double v = undo_[static_cast<size_t> (i)];
+		if (isProtected (i) && i != kDamage)
+			continue;
+		if (std::fabs (host_->getParam (i) - v) < 1e-9)
+			continue;
+		host_->editBegin (i);
+		host_->editSet (i, v);
+		host_->editEnd (i);
+	}
+	haveUndo_ = false;
+}
+
+void RasterUI::randomize (int unit)
+{
+	std::uniform_real_distribution<double> u01 (0.0, 1.0);
+	for (int i = 0; i < kNumParams; ++i)
+	{
+		const ParamSpec& s = spec (i);
+		if (isProtected (i) || (unit >= 0 && s.unit != unit))
+			continue;
+		double v;
+		if (s.kind == Kind::List)
+			v = std::floor (u01 (rng_) * s.listCount) / std::max (1, s.listCount - 1);
+		else
+		{
+			const Range r = randomRange (i);
+			v = r.lo + (r.hi - r.lo) * u01 (rng_);
+		}
+		v = clamp01 (v);
+		const int steps = stepCount (s);
+		if (steps > 0)
+			v = std::round (v * steps) / steps;
+		host_->editBegin (i);
+		host_->editSet (i, v);
+		host_->editEnd (i);
+	}
+}
+
+void RasterUI::resetUnit (int unit)
+{
+	for (int i = 0; i < kNumParams; ++i)
+	{
+		const ParamSpec& s = spec (i);
+		if (i == kBypass || i == kLossTrigger || (unit >= 0 && s.unit != unit))
+			continue;
+		host_->editBegin (i);
+		host_->editSet (i, defaultNormalized (i));
+		host_->editEnd (i);
+	}
 }
 
 } // namespace ui

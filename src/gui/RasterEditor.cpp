@@ -18,7 +18,10 @@ RasterEditor::RasterEditor (RasterController* controller)
 	setRect (r);
 }
 
-RasterEditor::~RasterEditor () = default;
+RasterEditor::~RasterEditor ()
+{
+	*alive_ = false;
+}
 
 bool PLUGIN_API RasterEditor::open (void* parent, const PlatformType& platformType)
 {
@@ -28,15 +31,23 @@ bool PLUGIN_API RasterEditor::open (void* parent, const PlatformType& platformTy
 	frame = new CFrame (size, this);
 	frame->setBackgroundColor (CColor (17, 19, 25));
 	if (!frame->open (parent, platformType))
+	{
+		frame->forget (); // never leave a half-opened frame behind
+		frame = nullptr;
 		return false;
+	}
 	ui_ = new ui::RasterUI (this);
 	frame->addView (ui_);
-	timer_ = makeOwned<CVSTGUITimer> ([this] (CVSTGUITimer*) { if (ui_) ui_->tick (0.033); }, 33, true);
+	timer_ = makeOwned<CVSTGUITimer> ([this] (CVSTGUITimer*) {
+		try { if (ui_) ui_->tick (0.033); } catch (...) {}
+	}, 33, true);
 	return true;
 }
 
 void PLUGIN_API RasterEditor::close ()
 {
+	*alive_ = false; // pending menu / dialog callbacks become no-ops
+	alive_ = std::make_shared<bool> (true);
 	timer_ = nullptr; // stop polling before the views go away
 	ui_ = nullptr;
 	if (frame)
@@ -65,6 +76,8 @@ void RasterEditor::presetMenu (CFrame* f, const CPoint& where)
 {
 	if (!f)
 		return;
+	try {
+	const auto alive = alive_;
 	const int style = COptionMenu::kPopupStyle | COptionMenu::kCheckStyle;
 	auto menu = makeOwned<COptionMenu> (CRect (0, 0, 10, 10), nullptr, -1, nullptr, nullptr, style);
 	const int current = ctrl_->factoryIndex ();
@@ -77,7 +90,7 @@ void RasterEditor::presetMenu (CFrame* f, const CPoint& where)
 		for (int i = first; i < last; ++i)
 		{
 			auto* item = new CCommandMenuItem (CCommandMenuItem::Desc (kPresets[i].name));
-			item->setActions ([this, i] (CCommandMenuItem*) { ctrl_->selectFactoryPreset (i); });
+			item->setActions ([this, i, alive] (CCommandMenuItem*) { if (*alive) ctrl_->selectFactoryPreset (i); });
 			item->setChecked (i == current);
 			sub->addEntry (item);
 		}
@@ -92,15 +105,17 @@ void RasterEditor::presetMenu (CFrame* f, const CPoint& where)
 	{
 		auto* item = new CCommandMenuItem (CCommandMenuItem::Desc (u.name.c_str ()));
 		const auto path = u.path;
-		item->setActions ([this, path] (CCommandMenuItem*) { ctrl_->loadUserPreset (path); });
+		item->setActions ([this, path, alive] (CCommandMenuItem*) { if (*alive) ctrl_->loadUserPreset (path); });
 		item->setChecked (current < 0 && ctrl_->presetName () == u.name && !ctrl_->presetModified ());
 		menu->addEntry (item);
 	}
 	menu->popup (f, where, [menu] (COptionMenu*) {});
+	} catch (...) {}
 }
 
 void RasterEditor::presetStep (int dir)
 {
+	try {
 	const auto user = listUserPresets ();
 	const int total = kNumPresets + static_cast<int> (user.size ());
 	int cur = ctrl_->factoryIndex ();
@@ -113,10 +128,13 @@ void RasterEditor::presetStep (int dir)
 		ctrl_->selectFactoryPreset (next);
 	else
 		ctrl_->loadUserPreset (user[static_cast<size_t> (next - kNumPresets)].path);
+	} catch (...) {}
 }
 
 void RasterEditor::presetSave (CFrame* f)
 {
+	try {
+	const auto alive = alive_;
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	fs::create_directories (presetDir (), ec);
@@ -126,20 +144,25 @@ void RasterEditor::presetSave (CFrame* f)
 		sel->setInitialDirectory (presetDir ().string ().c_str ());
 		sel->setDefaultSaveName ((sanitizeFileName (ctrl_->presetName ()) + kPresetExtension).c_str ());
 		sel->setDefaultExtension (CFileExtension ("Raster Damage preset", "rdpreset"));
-		sel->run ([this] (CNewFileSelector* s) {
-			if (s->getNumSelectedFiles () < 1)
+		sel->run ([this, alive] (CNewFileSelector* s) {
+			if (!*alive || s->getNumSelectedFiles () < 1)
 				return;
+			try {
 			fs::path path = fs::u8path (s->getSelectedFile (0));
 			if (path.extension () != kPresetExtension)
 				path += kPresetExtension;
 			ctrl_->saveUserPreset (path, path.stem ().string ());
+			} catch (...) {}
 		});
 		sel->forget ();
 	}
+	} catch (...) {}
 }
 
 void RasterEditor::presetLoad (CFrame* f)
 {
+	try {
+	const auto alive = alive_;
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	fs::create_directories (presetDir (), ec);
@@ -148,12 +171,15 @@ void RasterEditor::presetLoad (CFrame* f)
 		sel->setTitle ("Load Raster Damage preset");
 		sel->setInitialDirectory (presetDir ().string ().c_str ());
 		sel->addFileExtension (CFileExtension ("Raster Damage preset", "rdpreset"));
-		sel->run ([this] (CNewFileSelector* s) {
-			if (s->getNumSelectedFiles () > 0)
-				ctrl_->loadUserPreset (fs::u8path (s->getSelectedFile (0)));
+		sel->run ([this, alive] (CNewFileSelector* s) {
+			try {
+				if (*alive && s->getNumSelectedFiles () > 0)
+					ctrl_->loadUserPreset (fs::u8path (s->getSelectedFile (0)));
+			} catch (...) {}
 		});
 		sel->forget ();
 	}
+	} catch (...) {}
 }
 
 void RasterEditor::presetInit ()

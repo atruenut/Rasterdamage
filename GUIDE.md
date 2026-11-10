@@ -6,9 +6,15 @@ Every control belongs to one of those four metaphors, so you can think visually:
 
 ## The interface
 
-Top bar: preset dropdown (categories, then *My presets*), ◀ ▶ step through all presets, **Save** (writes a `.rdpreset` to your preset folder), **Load**, **Init** (defaults), **Bypass**.
-Middle: the **Live Raster** shows what the current settings do to a test pattern, with lanes for tear / dropout / smear / sync loss. Four panels (TEAR, SCANLINES, SMEAR, SYNC LOSS) hold the damage controls; the SCAN strip sets slice length, tempo sync, jitter, loop, seed, interlace, follow and the master DAMAGE amount; the OUTPUT strip has bandwidth, static, drive, split, mix and output level.
-Mouse: drag a knob, Shift for fine, double-click to reset, wheel to nudge. **FIRE NOW** fires a sync-loss burst on demand.
+**Top bar:** preset dropdown (categories, then *My presets*), ◀ ▶ step through every preset, **Save** (writes a `.rdpreset` to your preset folder), **Load**, **Init** (defaults), **Randomize** (rolls new values for the whole sound, within musical ranges; Mix, Output, Damage and tempo settings are left alone), **Undo** (restores the sound from before the last Randomize / RND / RST), **Bypass**.
+
+**Layout follows the signal flow:** SCAN (cut into frames) > TEAR > SMEAR > SCANLINES > SYNC LOSS > OUTPUT. Each section has a mode dropdown at the top, its knobs underneath, and two small buttons in its header: **RND** randomises just that section, **RST** resets just that section. The big **DAMAGE** knob scales everything. **FIRE NOW** (hold) triggers a sync-loss burst on demand.
+
+**Hint bar (bottom):** hover any control to see its full name, exact value and a one-line explanation.
+
+Mouse: drag a knob, **Shift** for fine control, **double-click** to reset, wheel to nudge.
+
+**Sound-design workflow:** start from a preset close to what you want, hit RND on one section at a time (Undo if you hate it), then refine by hand and Save. Lock a good seed, then change Slice or Loop to find rhythmic variations.
 
 ### Presets
 Selecting a preset sets every control. Changing a control marks it *modified*; Save keeps your version as a user preset. User presets are text files (`format=1`, `name=`, `Parameter Name=value`); unknown keys are ignored and missing ones fall back to defaults. Folders: Windows `Documents\Raster Damage\Presets`, Linux `~/.local/share/Raster Damage/Presets`, macOS `~/Library/Application Support/Raster Damage/Presets`.
@@ -95,9 +101,9 @@ The plugin adds a fixed 2-sample latency (reported to your host) so the dry sign
 | **Output** | -24 - 12 | 0.0 dB | Output gain. |
 | **Bypass** | 0 - 1 | Off  | Host bypass. |
 
-## 3. Presets (47 factory presets)
+## 3. Presets (77 factory presets)
 
-Pick them from your host's preset/program selector. Names starting with *Guitar / Vocal / Drums* are tuned for that source, the rest are general media-damage sounds.
+Pick them from the preset dropdown at the top of the plugin (or your host's program selector). Every preset is 100% wet. Names starting with *Guitar / Vocal / Drums / Bass / Synth / Mix Bus* are tuned for that source; **Scenes** are whole-sound character pieces; **Rhythm** presets lock to the host tempo.
 
 **Basics**
 
@@ -170,7 +176,46 @@ Pick them from your host's preset/program selector. Names starting with *Guitar 
 - 45. Subtle Wear
 - 46. Mono Sum Murder
 
-Loading a preset sets every parameter; tweak from there and save the result in your DAW's normal preset/project system.
+**Scenes**
+
+- 47. VHS Rental Tape
+- 48. Cassette Warble Dream
+- 49. Security Camera Loop
+- 50. Satellite Link Failing
+- 51. Haunted Broadcast
+- 52. Datamosh Frames
+- 53. Blue Screen Stutter
+- 54. Fax Handshake
+- 55. Dying Hard Drive
+- 56. Cathedral of Static
+
+**Rhythm (tempo sync)**
+
+- 57. Sixteenth Stutter Grid
+- 58. Triplet Gate Tear
+- 59. Half-Time Dropout
+- 60. Breakbeat Shredder
+- 61. Rolling Sync Pulse
+- 62. Gated Ghosts
+- 63. Static Between Notes
+
+**Instruments**
+
+- 64. Guitar: Lo-Fi Ambient
+- 65. Guitar: Djent Digital Chop
+- 66. Guitar: Broken Pedal
+- 67. Vocal: Radio Dispatch
+- 68. Vocal: Glitch Choir
+- 69. Vocal: Whispering Datamosh
+- 70. Drums: Snare Shatter
+- 71. Drums: Kick Brick
+- 72. Drums: Hat Static Rain
+- 73. Bass: Sub Tear
+- 74. Synth: Pad Disintegration
+- 75. Mix Bus: Worn Glue
+- 76. Mix Bus: Tape Eater
+
+Selecting a preset sets every parameter; tweak from there and use **Save** to keep your version.
 
 ## 4. Recipes
 

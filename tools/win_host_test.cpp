@@ -178,7 +178,7 @@ int main (int argc, char** argv)
 
 	// the host switches preset through its own program list -> UI + parameters must follow
 	g_performs = 0;
-	ctrl->setParamNormalized (1000, 22.0 / 46.0);
+	ctrl->setParamNormalized (1000, 60.0 / 76.0);
 	pump (800);
 	std::printf ("performEdit calls after preset change: %d\n", g_performs);
 	shot ((out + "_2.ppm").c_str ());
